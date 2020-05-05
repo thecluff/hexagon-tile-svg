@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+  <title>Hex Grid with D3 Example</title>
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous">
+  <style>
+    svg {
+      display: block;
+      margin: 0 auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="container mt-3">
+    <div class="row">
+      <div class="col-md-6 mt-4">
+        <h1 class="pb-4">An Illustrator + D3 hex map example.</h1>
+        <p>This is an example for <a href="https://github.com/jsoma/hexagon-grids-for-adobe-illustrator">Hexagon Grids for Adobe Illustrator</a>.</p>
+        <p>This uses the standard D3 <code>svg</code> + <code>margins</code> setup, but then pulls in <a href="grouped-hexagons.svg">this svg</a> to join with <a href="state-data.csv">this csv</a>. The join is based on columns matching layer names.</p>
+        <p>Since the hexagons are all separate, I also use <a href="http://turfjs.org/docs/">turf.js</a> to merge them into groups so I can make those nice black outlines. The state labels are positioned using <a href="https://github.com/mapbox/polylabel">polylabel</a>, although you could also just just the centroid of each shape. If you don't care about those things or do them in Illustrator, you're free to ignore them.</p>
+        <p>It's D3 v5, which means it uses possibly-weird stuff like <code>Promise.all</code> to read in the data.</p>
+      </div>
+      <div class="col-md-6">
+        <div id="graphic"></div>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/5.7.0/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/5.1.5/turf.min.js"></script>
+  <script src="polylabel.min.js"></script>
+  <script>
+    var margin = { top: 0, left: 0, right: 0, bottom: 0 }
+    var height = 500 - margin.top - margin.bottom
+    var width = 400 - margin.left - margin.right
+
+    var svg = d3
+      .select('#graphic')
+      .append('svg')
+      .attr('height', height + margin.top + margin.bottom)
+      .attr('width', width + margin.left + margin.right)
+      .append('g')
+      .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')')
+
+    var colorScale = d3
+      .scaleSequential(d3.interpolateCool)
+      .domain([0, 40])
+
+    var line = d3.line()
+    var path = d3.geoPath()
+
+    Promise.all([
+      d3.xml('grouped-hexagons.svg'),
+      d3.csv('state-data.csv')
+    ]).then(ready)
+
+    function ready([hexFile, datapoints]) {
+      // Get ready to process the hexagon svg file with D3
+      let imported = d3.select(hexFile).select('svg')
+
+      // Remove the stylesheets Illustrator saved
+      imported.selectAll('style').remove()
+
+      // Inject the imported svg's contents into our real svg
+      svg.html(imported.html())
+
+      // Loop through our csv, finding the g for each state.
+      // Use d3 to attach the datapoint to the group.
+      // e.g. d3.select("#" + d.abbr) => d3.select("#CA")
+      datapoints.forEach(d => {
+        svg.select("#" + d.abbr)
+          .attr('class', 'hex-group')
+          .each(function() {
+            d3.select(this).datum(d)
+          })
+      })
+
+      // Go through each group.
+      // Find the polygons inside, then set their color
+      // using our scale
+      svg.selectAll('.hex-group')
+        .each(function(d) {
+          var group = d3.select(this)
+          group.selectAll('polygon')
+            .attr('fill', colorScale(d.population))
+            .attr('opacity', 0.5)
+            .attr('stroke', 'white')
+            .attr('stroke-width', 1)
+        })
+
+      //
+      // Everything below is totally optional, it
+      // does the outlines and labels for the groups
+      //
+
+      svg.selectAll('.hex-group')
+        .each(function(d) {
+          // Grab the current group...
+
+          var group = d3.select(this)
+
+          // Get each polygon (hexagon) inside of the group
+          // Get the points attribute, looks like:
+          // 176.6,57.1 176.6,30.2 153.3,16.7
+          // Split on spaces, then commas
+          // Add first coordinate to end of coordinate
+          // list so it forms a closed shape
+          // And then return GeoJSON polygons using turf
+
+          var polygons = group
+              .selectAll('polygon')
+              .nodes()
+              .map(function(node) {
+                return node.getAttribute('points').trim()
+              })
+              .map(function(pointString) {
+                var regex = /(([\d\.]+)[ ,]([\d\.]+))/g
+                return pointString.match(regex).map(function(pair) {
+                  var coords = pair.split(/[ ,]/)
+                  return [+coords[0], +coords[1]]
+                })
+              })
+              .map(function(coords) {
+                coords.push(coords[0])
+                return turf.polygon([coords])
+              })
+
+          // Merge all of our hexagons into one big polygon
+
+          var merged = turf.union(...polygons)
+
+          // Add a new path for our outline
+          // And use the geoPath with our
+          // totally fake GeoJSON
+
+          group.append('path')
+            .datum(merged)
+            .attr('class', 'outline')
+            .attr('d', path)
+            .attr('stroke', 'black')
+            .attr('stroke-width', 3)
+            .attr('fill', 'none')
+
+          // Find where to put the group label using
+          // polylabel: https://github.com/mapbox/polylabel
+          // You could just use the centroid, but polylabel
+          // works much better for most shapes, especially
+          // if you're using longer text
+
+          // var center = path.centroid(merged)
+          var center = polylabel(merged.geometry.coordinates)
+
+          group.append('text')
+            .attr('class', 'outline')
+            .attr('transform', `translate(${center})`)
+            .text(d.abbr)
+            .attr('text-anchor', 'middle')
+            .attr('alignment-baseline', 'middle')
+            .attr('font-weight', 'bold')
+            .attr('font-size', 16)
+
+        })
+        .on('mouseover', function(d) {
+          d3.select(this).selectAll('polygon').attr('opacity', 0.8)
+        })
+        .on('mouseout', function(d) {
+          d3.select(this).selectAll('polygon').attr('opacity', 0.5)
+        })
+        // End of the totally optional section
+    }
+  </script>
+</body>
+</html>
